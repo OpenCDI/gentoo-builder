@@ -13,11 +13,11 @@ At now, this script is under testing and only supporting two GUI flavors:
 make install
 ```
 
-# Build your own packages with genbuci
+# Build your own packages with genbu
 
 ```
 export DOCKERFILE_PATH=/path/to/Dockerfile-CI
-cibuild
+genbu-ci
 ```
 
 It builds genbu builder image and also build portage packages within a new builder container.
