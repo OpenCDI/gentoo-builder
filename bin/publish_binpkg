@@ -1,0 +1,50 @@
+#!/bin/sh -ex
+#publish_binpkg - publish binpkg built by cibuild script
+#usage: publish_binpkg <serve|upload>
+# This is sample script
+
+: ${CIBUILD_TIMESTAMP:=20211004}
+: ${CIBUILD_ARTIFACT_VOLUME:=binpkg_vol_stage3_${CIBUILD_TIMESTAMP}}
+
+serve(){
+docker run \
+	--rm \
+	-it \
+	-p 8080:80 \
+	--hostname grepo.devinternal.localdomain \
+	--name binpkg_repo \
+	--mount type=volume,source=${CIBUILD_TIMESTAMP:-binpkg_vol_stage3_mate4_11},destination=/usr/local/apache2/htdocs \
+	httpd
+}
+
+upload(){
+	docker volume ls | grep ${CIBUILD_ARTIFACT_VOLUME:?source artifact not set} || {
+		echo artifact source directory not found! >&2
+		exit 1;
+	}
+	dst=/var/build/public-artifacts
+	docker run -it \
+		--name chowner \
+		--rm \
+		-v ${CIBUILD_ARTIFACT_VOLUME}:/src \
+		debian:bullseye \
+		chown 1500:1550 -R /src 
+
+	docker run -it \
+		--name copier \
+		--rm \
+		-v ${CIBUILD_ARTIFACT_VOLUME}:/${CIBUILD_ARTIFACT_VOLUME} \
+		-v ${dst:?destination artifact not set}:/dst \
+		debian:bullseye \
+		cp -a /${CIBUILD_ARTIFACT_VOLUME} /dst/
+}
+
+showhelp(){
+	head -3 $0 | tail -2 | tr -d \#
+}
+
+case "$1" in
+	serve) serve $@;;
+	up|upload) upload $@;;
+	*|help) showhelp;;
+esac

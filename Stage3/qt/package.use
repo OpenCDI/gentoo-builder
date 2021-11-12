@@ -1,0 +1,10 @@
+#net-print/cups dbus usb
+#net-dns/bind-tools idn
+#app-i18n/mozc fcutx4 emacs
+#mail-client/sylpheed ldap
+#app-emulation/docker btrfs
+#media-gfx/graphviz svg python doc
+#sys-apps/systemd policykit
+#media-video/vlc ogg dbus
+#media-libs/freetype harfbuzz
+#media-libs/libsdl2 gles2

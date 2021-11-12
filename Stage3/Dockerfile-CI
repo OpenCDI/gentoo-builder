@@ -1,0 +1,23 @@
+# image is based on stage3-amd64
+ARG TIMESTAMP
+ARG GENTOO_MIRRORS
+ARG MAKEOPTS
+ARG http_proxy
+ARG https_proxy
+ARG L10N
+FROM gentoo/stage3:systemd${TIMESTAMP:+-$TIMESTAMP}
+
+RUN sh -exc "\
+echo \"GENTOO_MIRRORS='${GENTOO_MIRRORS:?GENTOO_MIRRORS must be set!}'\" | tee -a /etc/portage/make.conf \
+&& echo "MAKEOPTS='${MAKEOPTS:--j16}'" | tee -a /etc/portage/make.conf \
+&& echo "${http_proxy:+http_proxy='$http_proxy'}" | tee -a /etc/portage/make.conf \
+&& echo "${https_proxy:+https_proxy='$https_proxy'}" | tee -a /etc/portage/make.conf \
+&& echo "${L10N:+L10N='$L10N'}" | tee -a /etc/portage/make.conf \
+&& echo 'ACCEPT_LICENSE=\"-* @FREE linux-fw-redistributable no-source-code\"' | tee -a /etc/portage/make.conf \
+&& mkdir -vp /etc/portage/repos.conf \
+&& cp -v /usr/share/portage/config/repos.conf /etc/portage/repos.conf/gentoo.conf \
+&& emerge-webrsync \
+"
+
+# continue with image build ...
+CMD /bin/bash

@@ -1,0 +1,176 @@
+#!/bin/sh -ex
+
+Flavor=
+TIMESTAMP=${CIBUILD_TIMESTAMP:-20211004}
+tagdate=$(tagdate min)
+
+case $1 in
+	mate|gnome|gtk) 
+		Flavor=gtk
+		ime="app-i18n/ibus"
+		sets="@world @system xorg-server xorg-drivers xhost xinit xf86-input-elographics xf86-input-synaptics grub efibootmgr sbsigntools dev-vcs/git app-editors/vim app-crypt/gnupg app-emulation/docker gentoo-kernel net-tools lightdm mate nftables iptables inotify-tools sudo"
+	       	;;
+	kde|lxqt|qt) 
+		Flavor=qt
+		ime="app-i18n/fcitx4" 
+		sets="@world @system xorg-server xorg-drivers xhost xinit xf86-input-elographics xf86-input-synaptics grub efibootmgr sbsigntools dev-vcs/git app-editors/vim app-crypt/gnupg app-emulation/docker gentoo-kernel net-tools nftables iptables inotify-tools sudo sddm sddm-kcm plasma-desktop net-tools"
+		;;
+	*) echo build flavor $1 not supported!; exit 1;;
+esac
+
+
+append_log_desc(){
+  echo -n "===== build ${tagdate} =====" | tee -a ${logPath:?logPath not set!}
+}
+append_log_stdin(){
+  tee -a ${logPath:?logPath not set!}
+}
+
+emerge_opt="--newuse --deep --update --with-bdeps=y -j8 --autounmask-write=y"
+
+echo_eselect_set(){
+  case ${Flavor:?flavor not set!} in
+    gtk)
+      echo "echo 'USE=\"bindist bzip2 ipv6 urandom user-session btrfs X alsa pulseaudio systemd -qt -qt4 -qt5 -kde -plasma -elogind\"' | tee -a /etc/portage/make.conf"
+      echo eselect profile set 10;;
+    qt) 
+      echo "echo 'USE=\"bindist bzip2 urandom user-session btrfs X alsa systemd -gtk -gtk2 -gnome pulseaudio -elogind\"' | tee -a /etc/portage/make.conf"
+      echo eselect profile set 8;;
+    *) echo unknown flavor $Flavor! >&2; exit 1;;
+  esac
+}
+
+echo_build_base(){
+  echo "
+    b_count=0
+    emerge --regen
+    test "$Flavor" != qt && {
+      echo media-libs/freetype -harfbuzz | tee -a /etc/portage/package.use/harfbuzz
+      emerge $emerge_opt harfbuzz
+    }
+    cibuild(){ 
+      b_count=\$(expr \$b_count + 1)
+      emerge $emerge_opt @world \
+        || { 
+	  if [ \$b_count -lt 5 ]; then
+	    etc-update --automode -5 && cibuild
+	  fi
+      }
+    }
+    cibuild 2>&1 | tee -a /var/log/build.log
+  "
+}
+
+echo_build_apps(){
+  echo "
+    b_count=0
+    echo app-i18n/mozc ${ime#*/} | tee /etc/portage/package.use/mozc
+    test "$Flavor" = qt && {
+      echo media-libs/freetype harfbuzz | tee -a /etc/portage/package.use/mozc
+      echo media-libs/libsdl2 gles2 | tee -a /etc/portage/package.use/mozc
+    }
+    cibuild(){ 
+      b_count=\$(expr \$b_count + 1)
+      emerge $emerge_opt $sets ${ime:+mozc ${ime%4}} \
+        || { 
+	  if [ \$b_count -lt 5 ]; then
+	    etc-update --automode -5 && cibuild
+	  fi
+      }
+    }
+    cibuild 2>&1 | tee -a /var/log/build.log
+  "
+}
+
+pull(){
+docker pull gentoo/stage3:latest
+docker pull gentoo/portage:latest
+}
+
+prepare(){
+docker build ${TIMESTAMP:+--build-arg=TIMESTAMP=$TIMESTAMP} -t $imgName -f $DOCKERFILE_PATH ${DOCKERFILE_PATH%/*}
+docker tag $imgName $imgNameBase:latest
+}
+
+run(){
+docker run \
+  -u root \
+  --name $conName \
+  -dt \
+  --mount type=volume,source=binpkg_vol_stage3_${Flavor}_${tagdate},destination=/var/cache/binpkgs \
+  --privileged \
+  --cap-add CAP_SYS_ADMIN \
+  $imgName
+}
+
+execute(){
+echo_eselect_set \
+  | docker exec -i $conName sh 2>&1 \
+  | append_log_stdin
+
+echo_build_base \
+  | command time docker exec -i $conName sh 2>&1 \
+  | append_log_stdin \
+  || { echo build failed!; exit 1;}
+echo_build_apps \
+  | command time docker exec -i $conName sh 2>&1 \
+  | append_log_stdin \
+  || { echo build failed!; exit 1;}
+}
+
+pack(){
+  echo "
+    quickpkg --include-unmodified-config=y \*/\* 
+    chmod go+rx -R /var/cache/binpkgs
+  " | command time docker exec -i $conName sh 2>&1 \
+    | append_log_stdin \
+    || { echo packing failed!; exit 1;}
+}
+
+alert(){
+alert_count=0
+while [ $alert_count -lt 300 ]; do
+  echo \\\a\\\a\\\a
+  alert_count=$(expr $alert_count + 1)
+  sleep 0.1
+done
+}
+
+loadenv(){
+: ${DOCKERFILE_PATH:=~/.local/genbu/dockerfiles/stage3/Dockerfile-CI}
+[ ! -f $DOCKERFILE_PATH ] && { echo Dockerfile not found!; exit 1;}
+imgNameBase=genbu
+imgName=$imgNameBase:${Flavor}-${tag:+${tag}-}${tagdate}
+conName=genbu_${Flavor}_builder_${tagdate}
+logPath=/var/build/logs/genbu.log
+}
+
+
+parseargs(){
+
+case "$1" in
+  pull|--pull) #pull latest gentoo image from dockerhub
+	  loadenv
+	  pull; shift; parseargs $@ ;; #--no-cache can be specified
+  rebuild-img|--rebuild) #rebuild genbu image before build
+	  loadenv
+	  prepare --no-cache ;;
+  full|--full) # full build (including builder image)
+	  loadenv
+	  prepare && run && execute && pack && alert;;
+  run|--nop|--no-prepare|--run) #not prepare
+	  loadenv
+	  run && execute && pack && alert;;
+  build|buildonly|--build) # make build in running container
+	  loadenv
+	  execute && alert;;
+  packonly|--pack) # reserve all built package with quickpkg
+	  loadenv
+	  pack && alert;;
+  "") loadenv; prepare && run && execute && pack && alert;;
+  *) tag=$1; loadenv; prepare && run && execute && pack && alert;;
+esac
+}
+
+shift
+parseargs "$@"

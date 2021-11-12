@@ -1,0 +1,25 @@
+net-print/cups dbus usb
+net-dns/bind-tools idn
+app-i18n/mozc fcutx4 emacs
+mail-client/sylpheed ldap
+app-emulation/docker btrfs
+media-gfx/graphviz svg python doc
+dev-qt/qt-creator git cppcheck cmake
+dev-util/cmake doc qt5
+dev-util/cppunit doc examples
+app-doc/doxygen dot qt5
+dev-qt/qtgui egl jpeg dbus
+dev-libs/poco cppparser examples mariadb mysql pocodoc sqlite pdf
+dev-qt/qtcharts qml
+media-libs/freetype harfbuzz
+sys-apps/systemd policykit
+dev-qt/qtcore icu
+dev-libs/libxml2 icu
+dev-qt/qtwebchannel qml
+app-arch/brotil python
+virtual/imagemagick-tools-0 png
+net-libs/zeromq drafts
+dev-python/PyQt5 widgets gui
+kde-freameworks/kitemmodels qml
+media-video/vlc ogg dbus
+kde-freameworks/prison qml
