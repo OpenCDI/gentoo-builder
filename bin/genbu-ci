@@ -1,176 +1,217 @@
 #!/bin/sh -ex
+# genbu-ci - portage-builder builder script powered by docker
+#usage: genbu-ci <subcommand> [arg]
+#version: 0.1.0
+#author: OpenCDI Contributors
 
-Flavor=
-TIMESTAMP=${CIBUILD_TIMESTAMP:-20211004}
-tagdate=$(tagdate min)
+loadenv(){
+  DOCKERIAN=${DOCKERIAN:-docker}
+  TAG_DATE=${TAG_DATE:-$(tagdate min)}
+  FLAVOR=${CIBUILD_FLAVOR:-mate}
+  TIMESTAMP=${CIBUILD_PORTAGE_TIMESTAMP:-20211016}
+  WITH_IME=${CIBUILD_WITH_IME}
+  WEBHOOK_URL=${CIBUILD_WEBHOOK_URL}
+  LOG_PATH=${CIBUILD_LOG_PATH:-/var/build/logs/genbu.log}
 
-case $1 in
-	mate|gnome|gtk) 
-		Flavor=gtk
-		ime="app-i18n/ibus"
-		sets="@world @system xorg-server xorg-drivers xhost xinit xf86-input-elographics xf86-input-synaptics grub efibootmgr sbsigntools dev-vcs/git app-editors/vim app-crypt/gnupg app-emulation/docker gentoo-kernel net-tools lightdm mate nftables iptables inotify-tools sudo"
-	       	;;
-	kde|lxqt|qt) 
-		Flavor=qt
-		ime="app-i18n/fcitx4" 
-		sets="@world @system xorg-server xorg-drivers xhost xinit xf86-input-elographics xf86-input-synaptics grub efibootmgr sbsigntools dev-vcs/git app-editors/vim app-crypt/gnupg app-emulation/docker gentoo-kernel net-tools nftables iptables inotify-tools sudo sddm sddm-kcm plasma-desktop net-tools"
-		;;
-	*) echo build flavor $1 not supported!; exit 1;;
+  : ${DOCKERFILE_PATH:=~/.local/genbu/dockerfiles/stage3/Dockerfile-CI}
+  [ ! -f "$DOCKERFILE_PATH" ] && { echo Dockerfile not found!; exit 1;} || :
+
+  : ${TAG_DATE:?TAG_DATE not set!}
+
+  : ${LOG_PATH:?LOG_PATH not set!}
+  [ ! -d "${LOG_PATH%/*}" ] && { mkdir -vp "${LOG_PATH%/*}" || exit 1;} || :
+  [ ! -f "$LOG_PATH" ] && { touch "${LOG_PATH}" || exit 1;} || :
+
+  img_name_base=genbu
+  img_name=$img_name_base:${FLAVOR}-${tag:+${tag}-}${TAG_DATE}
+  con_name=genbu_${FLAVOR}_builder_${TAG_DATE}
+  emerge_opt="--newuse --deep --update --with-bdeps=y -j8 --autounmask-write=y"
+}
+
+
+parseargs(){
+case "$1" in
+  pull) ## pull latest gentoo image from dockerhub
+    pull;; 
+  rebuild-img|rebuild) ## rebuild genbu image before build
+    prepare --no-cache ;;
+  run) ## full build (including builder image)
+    prepare && run && execute && pack && bnotify;;
+  run-nop) ## not prepare but run build
+    run && execute && pack && bnotify;;
+  buildonly) ## make build in running container
+    execute && bnotify;;
+  pack) ## reserve all built package with quickpkg
+    pack && bnotify;;
+  "") prepare && run && execute && pack && bnotify;;
+  *) tag=$1; prepare && run && execute && pack && bnotify;;
 esac
-
-
-append_log_desc(){
-  echo -n "===== build ${tagdate} =====" | tee -a ${logPath:?logPath not set!}
 }
+
+# [logging] 
+#
+# logging functions append new log lines into LOG_PATH.
+# append_log_header makes new header for log lines.
+# append_log_stdin write log lines which is passed from stdin.
+
+append_log_header(){
+  echo -n "===== build ${TAG_DATE} =====" \
+    | tee -a ${LOG_PATH:?LOG_PATH not set!}
+}
+
 append_log_stdin(){
-  tee -a ${logPath:?logPath not set!}
+  tee -a ${LOG_PATH:?LOG_PATH not set!}
 }
 
-emerge_opt="--newuse --deep --update --with-bdeps=y -j8 --autounmask-write=y"
+# [core] eselect and initial USE flag setter
+#
+# echo_eselect_set sets USE flag for make.conf. 
+# eselect is also choosed for specified FLAVOR (only MATE and KDE Plasma with X and systemd supported).
+# (for developers) If you would like to build another condition with this script, write your own patch and make PR.
 
 echo_eselect_set(){
-  case ${Flavor:?flavor not set!} in
+  case ${FLAVOR:?flavor not set!} in
     gtk)
       echo "echo 'USE=\"bindist bzip2 ipv6 urandom user-session btrfs X alsa pulseaudio systemd -qt -qt4 -qt5 -kde -plasma -elogind\"' | tee -a /etc/portage/make.conf"
       echo eselect profile set 10;;
     qt) 
       echo "echo 'USE=\"bindist bzip2 urandom user-session btrfs X alsa systemd -gtk -gtk2 -gnome pulseaudio -elogind\"' | tee -a /etc/portage/make.conf"
       echo eselect profile set 8;;
-    *) echo unknown flavor $Flavor! >&2; exit 1;;
+    *) 
+      echo unknown flavor $FLAVOR! >&2; exit 1;;
   esac
 }
+
+
+# [core] echoer functions
+#
+# echo_build_base and echo_build_apps print core build script for stdout, which is captured with a shell inside gentoo container.
+# At now, USE resolving is based on the auto-mode of etc-update. 
+# This is not a recommended way for ordinary gentoo users, but for simply implementing
+# fast-food use case of the CI pipeline.
 
 echo_build_base(){
   echo "
     b_count=0
     emerge --regen
-    test "$Flavor" != qt && {
+    test "$FLAVOR" != qt && {
       echo media-libs/freetype -harfbuzz | tee -a /etc/portage/package.use/harfbuzz
       emerge $emerge_opt harfbuzz
     }
-    cibuild(){ 
+    __cibuild(){ 
       b_count=\$(expr \$b_count + 1)
       emerge $emerge_opt @world \
         || { 
-	  if [ \$b_count -lt 5 ]; then
-	    etc-update --automode -5 && cibuild
-	  fi
+    if [ \$b_count -lt 5 ]; then
+      etc-update --automode -5 && __cibuild
+    fi
       }
     }
-    cibuild 2>&1 | tee -a /var/log/build.log
+    __cibuild 2>&1 | tee -a /var/log/build.log
   "
 }
 
 echo_build_apps(){
   echo "
     b_count=0
-    echo app-i18n/mozc ${ime#*/} | tee /etc/portage/package.use/mozc
-    test "$Flavor" = qt && {
+
+    echo ${WITH_IME:+app-i18n/mozc ${WITH_IME#*/}} \
+      | tee /etc/portage/package.use/mozc
+
+    test "$FLAVOR" = qt && {
       echo media-libs/freetype harfbuzz | tee -a /etc/portage/package.use/mozc
       echo media-libs/libsdl2 gles2 | tee -a /etc/portage/package.use/mozc
     }
-    cibuild(){ 
+
+    __cibuild(){ 
       b_count=\$(expr \$b_count + 1)
-      emerge $emerge_opt $sets ${ime:+mozc ${ime%4}} \
-        || { 
-	  if [ \$b_count -lt 5 ]; then
-	    etc-update --automode -5 && cibuild
-	  fi
+      emerge $emerge_opt $sets ${WITH_IME:+mozc ${WITH_IME%4}} || { 
+        if [ \$b_count -lt 5 ]; then
+          etc-update --automode -5 && __cibuild
+        fi
       }
     }
-    cibuild 2>&1 | tee -a /var/log/build.log
+    __cibuild 2>&1 | tee -a /var/log/build.log
   "
 }
 
+
+# pull image
 pull(){
-docker pull gentoo/stage3:latest
-docker pull gentoo/portage:latest
+  prefix=
+  [ "${DOCKERIAN:?DOCKERFIAN must be specified}" = "podman" ] && prefix=docker.io/
+  $DOCKERIAN pull ${prefix}gentoo/stage3:latest
+  $DOCKERIAN pull ${prefix}gentoo/portage:latest
 }
 
+# build a genbu image
 prepare(){
-docker build ${TIMESTAMP:+--build-arg=TIMESTAMP=$TIMESTAMP} -t $imgName -f $DOCKERFILE_PATH ${DOCKERFILE_PATH%/*}
-docker tag $imgName $imgNameBase:latest
+  $DOCKERIAN build \
+    ${TIMESTAMP:+--build-arg=TIMESTAMP=$TIMESTAMP} \
+    ${GENTOO_MIRRORS:+--build-arg=GENTOO_MIRRORS=$GENTOO_MIRRORS} \
+    ${http_proxy:+--build-arg=http_proxy=$http_proxy} \
+    ${https_proxy:+--build-arg=https_proxy=$https_proxy} \
+    ${MAKEOPTS:+--build-arg=MAKEOPTS=$MAKEOPTS} \
+    ${L10N:+--build-arg=L10N=$L10N} \
+    -t $img_name \
+    -f $DOCKERFILE_PATH ${DOCKERFILE_PATH%/*} \
+    "$@" || exit 1
+  $DOCKERIAN tag $img_name $img_name_base:latest
 }
 
+# launch builder container
 run(){
-docker run \
-  -u root \
-  --name $conName \
-  -dt \
-  --mount type=volume,source=binpkg_vol_stage3_${Flavor}_${tagdate},destination=/var/cache/binpkgs \
-  --privileged \
-  --cap-add CAP_SYS_ADMIN \
-  $imgName
+  $DOCKERIAN run \
+    -u root \
+    --name $con_name \
+    -dt \
+    --mount type=volume,source=binpkg_vol_stage3_${FLAVOR}_${TAG_DATE},destination=/var/cache/binpkgs \
+    --privileged \
+    --cap-add CAP_SYS_ADMIN \
+    $img_name
 }
 
+# build portage packages
 execute(){
-echo_eselect_set \
-  | docker exec -i $conName sh 2>&1 \
-  | append_log_stdin
+  echo_eselect_set \
+    | $DOCKERIAN exec -i $con_name sh 2>&1 \
+    | append_log_stdin
 
-echo_build_base \
-  | command time docker exec -i $conName sh 2>&1 \
-  | append_log_stdin \
-  || { echo build failed!; exit 1;}
-echo_build_apps \
-  | command time docker exec -i $conName sh 2>&1 \
-  | append_log_stdin \
-  || { echo build failed!; exit 1;}
+  echo_build_base \
+    | command time $DOCKERIAN exec -i $con_name sh 2>&1 \
+    | append_log_stdin \
+    || { echo build failed!; exit 1;}
+  echo_build_apps \
+    | command time $DOCKERIAN exec -i $con_name sh 2>&1 \
+    | append_log_stdin \
+    || { echo build failed!; exit 1;}
 }
 
+# make bindist packages with quickpkg
 pack(){
   echo "
     quickpkg --include-unmodified-config=y \*/\* 
     chmod go+rx -R /var/cache/binpkgs
-  " | command time docker exec -i $conName sh 2>&1 \
+  " | command time $DOCKERIAN exec -i $con_name sh 2>&1 \
     | append_log_stdin \
     || { echo packing failed!; exit 1;}
 }
 
-alert(){
-alert_count=0
-while [ $alert_count -lt 300 ]; do
-  echo \\\a\\\a\\\a
-  alert_count=$(expr $alert_count + 1)
-  sleep 0.1
-done
-}
-
-loadenv(){
-: ${DOCKERFILE_PATH:=~/.local/genbu/dockerfiles/stage3/Dockerfile-CI}
-[ ! -f $DOCKERFILE_PATH ] && { echo Dockerfile not found!; exit 1;}
-imgNameBase=genbu
-imgName=$imgNameBase:${Flavor}-${tag:+${tag}-}${tagdate}
-conName=genbu_${Flavor}_builder_${tagdate}
-logPath=/var/build/logs/genbu.log
+# make notification for a build finished
+bnotify(){
+  bnotify_count=0
+  [ -n "$WEBHOOK_URL" ] && {
+    curl -i \
+      -d "[genbu-ci] build finished for stage3_${FLAVOR}_$TAG_DATE}" \
+      $WEBHOOK_URL 
+  }
+  while [ $bnotify_count -lt 300 ]; do
+    echo \\\a\\\a\\\a
+    bnotify_count=$(expr $bnotify_count + 1)
+    sleep 0.1
+  done
 }
 
 
-parseargs(){
-
-case "$1" in
-  pull|--pull) #pull latest gentoo image from dockerhub
-	  loadenv
-	  pull; shift; parseargs $@ ;; #--no-cache can be specified
-  rebuild-img|--rebuild) #rebuild genbu image before build
-	  loadenv
-	  prepare --no-cache ;;
-  full|--full) # full build (including builder image)
-	  loadenv
-	  prepare && run && execute && pack && alert;;
-  run|--nop|--no-prepare|--run) #not prepare
-	  loadenv
-	  run && execute && pack && alert;;
-  build|buildonly|--build) # make build in running container
-	  loadenv
-	  execute && alert;;
-  packonly|--pack) # reserve all built package with quickpkg
-	  loadenv
-	  pack && alert;;
-  "") loadenv; prepare && run && execute && pack && alert;;
-  *) tag=$1; loadenv; prepare && run && execute && pack && alert;;
-esac
-}
-
-shift
+loadenv
 parseargs "$@"
