@@ -11,6 +11,8 @@ loadenv(){
   TIMESTAMP=${CIBUILD_PORTAGE_TIMESTAMP:-20211016}
   WITH_IME=${CIBUILD_WITH_IME}
   WEBHOOK_URL=${CIBUILD_WEBHOOK_URL}
+  WEBHOOK_HEADER_OPT=${CIBUILD_WEBHOOK_HEADER_OPT}
+
   LOG_PATH=${CIBUILD_LOG_PATH:-/var/build/logs/genbu.log}
 
   : ${DOCKERFILE_PATH:=~/.local/genbu/dockerfiles/stage3/Dockerfile-CI}
@@ -55,7 +57,7 @@ esac
 # append_log_stdin write log lines which is passed from stdin.
 
 append_log_header(){
-  echo -n "===== build ${TAG_DATE} =====" \
+  echo "===== build ${TAG_DATE} =====" \
     | tee -a ${LOG_PATH:?LOG_PATH not set!}
 }
 
@@ -94,7 +96,7 @@ echo_build_base(){
   echo "
     b_count=0
     emerge --regen
-    test "$FLAVOR" != qt && {
+    test \"$FLAVOR\" != qt && {
       echo media-libs/freetype -harfbuzz | tee -a /etc/portage/package.use/harfbuzz
       emerge $emerge_opt harfbuzz
     }
@@ -118,7 +120,7 @@ echo_build_apps(){
     echo ${WITH_IME:+app-i18n/mozc ${WITH_IME#*/}} \
       | tee /etc/portage/package.use/mozc
 
-    test "$FLAVOR" = qt && {
+    test \"$FLAVOR\" = qt && {
       echo media-libs/freetype harfbuzz | tee -a /etc/portage/package.use/mozc
       echo media-libs/libsdl2 gles2 | tee -a /etc/portage/package.use/mozc
     }
@@ -134,7 +136,6 @@ echo_build_apps(){
     __cibuild 2>&1 | tee -a /var/log/build.log
   "
 }
-
 
 # pull image
 pull(){
@@ -202,6 +203,8 @@ bnotify(){
   bnotify_count=0
   [ -n "$WEBHOOK_URL" ] && {
     curl -i \
+      -X POST \
+      "${WEBHOOK_HEADER_OPT:+-H \"$WEBHOOK_HEADER_OPT\"}" \
       -d "[genbu-ci] build finished for stage3_${FLAVOR}_$TAG_DATE}" \
       $WEBHOOK_URL 
   }
