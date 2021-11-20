@@ -3,8 +3,8 @@
 #usage: publish_binpkg <serve|upload>
 # This is sample script
 
-: ${CIBUILD_TIMESTAMP:=20211004}
-: ${CIBUILD_ARTIFACT_VOLUME:=binpkg_vol_stage3_${CIBUILD_TIMESTAMP}}
+: ${CIBUILD_PORTAGE_TIMESTAMP:=20211004}
+: ${CIBUILD_ARTIFACT_VOLUME:=binpkg_vol_stage3_${CIBUILD_PORTAGE_TIMESTAMP}}
 
 serve(){
 docker run \
@@ -13,7 +13,7 @@ docker run \
 	-p 8080:80 \
 	--hostname grepo.devinternal.localdomain \
 	--name binpkg_repo \
-	--mount type=volume,source=${CIBUILD_TIMESTAMP:-binpkg_vol_stage3_mate4_11},destination=/usr/local/apache2/htdocs \
+	--mount type=volume,source=${CIBUILD_PORTAGE_TIMESTAMP:-binpkg_vol_stage3_mate4_11},destination=/usr/local/apache2/htdocs \
 	httpd
 }
 
